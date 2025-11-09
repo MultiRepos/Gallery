@@ -64,6 +64,7 @@
             font-size: 1.5rem;
             font-weight: 700;
             color: var(--primary);
+            text-decoration: none;
         }
 
         .logo i {
@@ -358,6 +359,10 @@
             color: var(--accent);
         }
 
+        .liked {
+            color: var(--accent);
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -409,6 +414,34 @@
 
         .modal-close:hover {
             background: rgba(0, 0, 0, 0.7);
+        }
+
+        .modal-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .modal-nav:hover {
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        .modal-prev {
+            left: 20px;
+        }
+
+        .modal-next {
+            right: 20px;
         }
 
         .auth-modal {
@@ -601,6 +634,28 @@
             color: #adb5bd;
         }
 
+        .share-url {
+            display: flex;
+            margin-top: 15px;
+        }
+
+        .share-url input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #dee2e6;
+            border-radius: 5px 0 0 5px;
+            font-size: 0.9rem;
+        }
+
+        .share-url button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 0 5px 5px 0;
+            cursor: pointer;
+        }
+
         @media (max-width: 768px) {
             .navbar {
                 flex-direction: column;
@@ -620,6 +675,11 @@
             .gallery {
                 grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             }
+            
+            .modal-nav {
+                width: 40px;
+                height: 40px;
+            }
         }
     </style>
 </head>
@@ -628,15 +688,15 @@
     <header>
         <div class="container">
             <div class="navbar">
-                <div class="logo">
+                <a href="#" class="logo">
                     <i class="fas fa-fire"></i>
                     <span>FireGallery</span>
-                </div>
+                </a>
                 <div class="nav-links">
                     <a href="#" class="active">Home</a>
-                    <a href="#">Gallery</a>
-                    <a href="#">Upload</a>
-                    <a href="#">About</a>
+                    <a href="#gallery">Gallery</a>
+                    <a href="#upload">Upload</a>
+                    <a href="#about">About</a>
                 </div>
                 <div class="auth-section">
                     <div id="user-info" class="user-info" style="display: none;">
@@ -717,6 +777,12 @@
             <div class="modal-close" id="modal-close">
                 <i class="fas fa-times"></i>
             </div>
+            <div class="modal-nav modal-prev" id="modal-prev">
+                <i class="fas fa-chevron-left"></i>
+            </div>
+            <div class="modal-nav modal-next" id="modal-next">
+                <i class="fas fa-chevron-right"></i>
+            </div>
             <img class="modal-img" id="modal-img" src="" alt="Full size image">
             <div class="modal-info">
                 <h3 id="modal-title"></h3>
@@ -724,6 +790,11 @@
                 <div class="gallery-meta">
                     <span id="modal-author"></span>
                     <span id="modal-date"></span>
+                    <span id="modal-likes"><i class="fas fa-heart"></i> <span id="likes-count">0</span></span>
+                </div>
+                <div class="share-url">
+                    <input type="text" id="share-url" readonly>
+                    <button id="copy-url"><i class="fas fa-copy"></i> Copy</button>
                 </div>
             </div>
         </div>
@@ -798,9 +869,9 @@
                     <h3>Quick Links</h3>
                     <ul class="footer-links">
                         <li><a href="#">Home</a></li>
-                        <li><a href="#">Gallery</a></li>
-                        <li><a href="#">Upload</a></li>
-                        <li><a href="#">About</a></li>
+                        <li><a href="#gallery">Gallery</a></li>
+                        <li><a href="#upload">Upload</a></li>
+                        <li><a href="#about">About</a></li>
                     </ul>
                 </div>
                 <div class="footer-section">
@@ -834,7 +905,12 @@
             limit,
             doc,
             deleteDoc,
-            serverTimestamp 
+            updateDoc,
+            arrayUnion,
+            arrayRemove,
+            increment,
+            serverTimestamp,
+            getDoc
         } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
         import { 
             getAuth, 
@@ -844,7 +920,8 @@
             createUserWithEmailAndPassword, 
             signInWithEmailAndPassword,
             signOut,
-            onAuthStateChanged 
+            onAuthStateChanged,
+            updateProfile
         } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
 
         // Your web app's Firebase configuration
@@ -888,6 +965,11 @@
         const modalDescription = document.getElementById('modal-description');
         const modalAuthor = document.getElementById('modal-author');
         const modalDate = document.getElementById('modal-date');
+        const modalLikes = document.getElementById('likes-count');
+        const modalPrev = document.getElementById('modal-prev');
+        const modalNext = document.getElementById('modal-next');
+        const shareUrl = document.getElementById('share-url');
+        const copyUrl = document.getElementById('copy-url');
         const toast = document.getElementById('toast');
         const toastMessage = document.getElementById('toast-message');
         const toastIcon = document.getElementById('toast-icon');
@@ -900,11 +982,15 @@
         const anonymousSignin = document.getElementById('anonymous-signin');
         const mineFilter = document.getElementById('mine-filter');
         const searchInput = document.getElementById('search-input');
+        const filterBtns = document.querySelectorAll('.filter-btn');
 
         // Global Variables
         let currentUser = null;
         let selectedFile = null;
         let images = [];
+        let filteredImages = [];
+        let currentImageIndex = 0;
+        let currentFilter = 'all';
 
         // Event Listeners
         document.addEventListener('DOMContentLoaded', initApp);
@@ -921,10 +1007,19 @@
                 showAuthModal('signin');
             }
         });
-        modalClose.addEventListener('click', () => imageModal.style.display = 'none');
-        imageModal.addEventListener('click', (e) => {
-            if (e.target === imageModal) imageModal.style.display = 'none';
+        modalClose.addEventListener('click', () => {
+            imageModal.style.display = 'none';
+            window.history.replaceState(null, null, window.location.pathname);
         });
+        imageModal.addEventListener('click', (e) => {
+            if (e.target === imageModal) {
+                imageModal.style.display = 'none';
+                window.history.replaceState(null, null, window.location.pathname);
+            }
+        });
+        modalPrev.addEventListener('click', showPrevImage);
+        modalNext.addEventListener('click', showNextImage);
+        copyUrl.addEventListener('click', copyShareUrl);
 
         // Auth Modal Tabs
         authTabs.forEach(tab => {
@@ -952,6 +1047,16 @@
         // Search Functionality
         searchInput.addEventListener('input', filterImages);
 
+        // Filter buttons
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.getAttribute('data-filter');
+                filterImages();
+            });
+        });
+
         // Initialize App
         function initApp() {
             // Set up auth state listener
@@ -969,6 +1074,29 @@
 
             // Load initial images
             loadImages();
+
+            // Check for URL parameters
+            checkUrlParams();
+        }
+
+        // Check URL parameters for image viewing
+        function checkUrlParams() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const imageId = urlParams.get('id');
+            
+            if (imageId && window.location.hash === '#view') {
+                // Wait for images to load, then open the modal
+                const checkImageLoaded = setInterval(() => {
+                    if (images.length > 0) {
+                        clearInterval(checkImageLoaded);
+                        const image = images.find(img => img.id === imageId);
+                        if (image) {
+                            const index = images.indexOf(image);
+                            openImageModal(index);
+                        }
+                    }
+                }, 100);
+            }
         }
 
         // Handle File Selection
@@ -978,6 +1106,11 @@
             
             if (!file.type.match('image.*')) {
                 showToast('Please select an image file', 'error');
+                return;
+            }
+            
+            if (file.size > 5000000) { // 5MB limit
+                showToast('Image size must be less than 5MB', 'error');
                 return;
             }
             
@@ -1070,22 +1203,54 @@
             gallery.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
             
             try {
-                const q = query(collection(db, 'images'), orderBy('timestamp', 'desc'));
+                let q;
+                if (currentFilter === 'popular') {
+                    q = query(collection(db, 'images'), orderBy('likes', 'desc'));
+                } else {
+                    q = query(collection(db, 'images'), orderBy('timestamp', 'desc'));
+                }
+                
                 const querySnapshot = await getDocs(q);
                 
                 images = [];
                 querySnapshot.forEach((doc) => {
+                    const data = doc.data();
                     images.push({
                         id: doc.id,
-                        ...doc.data()
+                        ...data,
+                        // Convert Firestore timestamp to Date if it exists
+                        timestamp: data.timestamp ? data.timestamp.toDate() : new Date()
                     });
                 });
                 
-                renderGallery(images);
+                filterImages();
             } catch (error) {
                 console.error('Error loading images:', error);
                 gallery.innerHTML = '<p>Error loading images. Please try again later.</p>';
             }
+        }
+
+        // Filter images based on search and filter
+        function filterImages() {
+            const searchTerm = searchInput.value.toLowerCase();
+            
+            filteredImages = images.filter(image => {
+                // Apply search filter
+                const matchesSearch = !searchTerm || 
+                    image.title.toLowerCase().includes(searchTerm) || 
+                    (image.description && image.description.toLowerCase().includes(searchTerm)) ||
+                    image.author.toLowerCase().includes(searchTerm);
+                
+                // Apply category filter
+                let matchesFilter = true;
+                if (currentFilter === 'mine' && currentUser) {
+                    matchesFilter = image.authorId === currentUser.uid;
+                }
+                
+                return matchesSearch && matchesFilter;
+            });
+            
+            renderGallery(filteredImages);
         }
 
         // Render gallery with images
@@ -1101,6 +1266,8 @@
                 // Reconstruct base64 from chunks
                 const base64 = image.chunks.join('');
                 
+                const isLiked = currentUser && image.likedBy && image.likedBy.includes(currentUser.uid);
+                
                 const galleryItem = document.createElement('div');
                 galleryItem.className = 'gallery-item';
                 galleryItem.innerHTML = `
@@ -1110,11 +1277,11 @@
                         <div class="gallery-description">${image.description || 'No description'}</div>
                         <div class="gallery-meta">
                             <span>by ${image.author}</span>
-                            <span>${formatDate(image.timestamp?.toDate())}</span>
+                            <span>${formatDate(image.timestamp)}</span>
                         </div>
                     </div>
                     <div class="gallery-actions">
-                        <div class="action-btn like" data-id="${image.id}">
+                        <div class="action-btn like ${isLiked ? 'liked' : ''}" data-id="${image.id}">
                             <i class="fas fa-heart"></i>
                         </div>
                         ${currentUser && currentUser.uid === image.authorId ? `
@@ -1127,7 +1294,10 @@
                 
                 // Add event listeners
                 const img = galleryItem.querySelector('.gallery-img');
-                img.addEventListener('click', () => openImageModal(image));
+                img.addEventListener('click', () => {
+                    const index = filteredImages.indexOf(image);
+                    openImageModal(index);
+                });
                 
                 const likeBtn = galleryItem.querySelector('.like');
                 likeBtn.addEventListener('click', () => handleLike(image.id));
@@ -1142,26 +1312,93 @@
         }
 
         // Open image modal
-        function openImageModal(image) {
+        function openImageModal(index) {
+            currentImageIndex = index;
+            const image = filteredImages[index];
             const base64 = image.chunks.join('');
+            
             modalImg.src = base64;
             modalTitle.textContent = image.title;
             modalDescription.textContent = image.description || 'No description';
             modalAuthor.textContent = `by ${image.author}`;
-            modalDate.textContent = formatDate(image.timestamp?.toDate());
+            modalDate.textContent = formatDate(image.timestamp);
+            modalLikes.textContent = image.likes || 0;
+            
+            // Update share URL
+            const shareUrlValue = `${window.location.origin}${window.location.pathname}#view?id=${image.id}`;
+            shareUrl.value = shareUrlValue;
+            
+            // Update URL without reloading page
+            window.history.replaceState(null, null, `#view?id=${image.id}`);
+            
+            // Update like button state
+            const isLiked = currentUser && image.likedBy && image.likedBy.includes(currentUser.uid);
+            const likeBtn = document.querySelector(`.like[data-id="${image.id}"]`);
+            if (likeBtn) {
+                likeBtn.classList.toggle('liked', isLiked);
+            }
+            
             imageModal.style.display = 'flex';
+            
+            // Show/hide navigation buttons
+            modalPrev.style.display = index > 0 ? 'flex' : 'none';
+            modalNext.style.display = index < filteredImages.length - 1 ? 'flex' : 'none';
+        }
+
+        // Show previous image in modal
+        function showPrevImage() {
+            if (currentImageIndex > 0) {
+                openImageModal(currentImageIndex - 1);
+            }
+        }
+
+        // Show next image in modal
+        function showNextImage() {
+            if (currentImageIndex < filteredImages.length - 1) {
+                openImageModal(currentImageIndex + 1);
+            }
+        }
+
+        // Copy share URL to clipboard
+        function copyShareUrl() {
+            shareUrl.select();
+            document.execCommand('copy');
+            showToast('URL copied to clipboard!', 'success');
         }
 
         // Handle like functionality
-        function handleLike(imageId) {
+        async function handleLike(imageId) {
             if (!currentUser) {
                 showToast('Please sign in to like images', 'error');
                 return;
             }
             
-            // This is a simplified implementation
-            // In a real app, you would update the Firestore document
-            showToast('Like functionality would be implemented here', 'success');
+            try {
+                const imageRef = doc(db, 'images', imageId);
+                const image = images.find(img => img.id === imageId);
+                
+                if (image.likedBy && image.likedBy.includes(currentUser.uid)) {
+                    // Unlike the image
+                    await updateDoc(imageRef, {
+                        likes: increment(-1),
+                        likedBy: arrayRemove(currentUser.uid)
+                    });
+                    showToast('Image unliked', 'success');
+                } else {
+                    // Like the image
+                    await updateDoc(imageRef, {
+                        likes: increment(1),
+                        likedBy: arrayUnion(currentUser.uid)
+                    });
+                    showToast('Image liked!', 'success');
+                }
+                
+                // Reload images to update counts
+                loadImages();
+            } catch (error) {
+                console.error('Error updating like:', error);
+                showToast('Failed to update like', 'error');
+            }
         }
 
         // Handle delete functionality
@@ -1174,27 +1411,19 @@
                 await deleteDoc(doc(db, 'images', imageId));
                 showToast('Image deleted successfully', 'success');
                 loadImages();
+                
+                // Close modal if it's open and showing the deleted image
+                if (imageModal.style.display === 'flex') {
+                    const currentImage = filteredImages[currentImageIndex];
+                    if (currentImage && currentImage.id === imageId) {
+                        imageModal.style.display = 'none';
+                        window.history.replaceState(null, null, window.location.pathname);
+                    }
+                }
             } catch (error) {
                 console.error('Error deleting image:', error);
                 showToast('Failed to delete image', 'error');
             }
-        }
-
-        // Filter images based on search
-        function filterImages() {
-            const searchTerm = searchInput.value.toLowerCase();
-            if (!searchTerm) {
-                renderGallery(images);
-                return;
-            }
-            
-            const filtered = images.filter(image => 
-                image.title.toLowerCase().includes(searchTerm) || 
-                image.description.toLowerCase().includes(searchTerm) ||
-                image.author.toLowerCase().includes(searchTerm)
-            );
-            
-            renderGallery(filtered);
         }
 
         // Authentication Handlers
@@ -1228,7 +1457,18 @@
                 return;
             }
             
+            if (password.length < 6) {
+                showToast('Password must be at least 6 characters', 'error');
+                return;
+            }
+            
             createUserWithEmailAndPassword(auth, email, password)
+                .then((userCredential) => {
+                    // Update profile with display name
+                    return updateProfile(userCredential.user, {
+                        displayName: name
+                    });
+                })
                 .then(() => {
                     showToast('Account created successfully!', 'success');
                     authModal.style.display = 'none';
