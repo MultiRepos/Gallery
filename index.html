@@ -692,6 +692,10 @@
             background: var(--danger);
         }
 
+        .toast.warning {
+            background: var(--warning);
+        }
+
         .loading {
             display: flex;
             justify-content: center;
@@ -706,6 +710,30 @@
             border-left-color: var(--primary);
             border-radius: 50%;
             animation: spin 1s linear infinite;
+        }
+
+        .index-error {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            margin-bottom: 30px;
+            border-left: 4px solid var(--warning);
+        }
+
+        .index-error h3 {
+            color: var(--warning);
+            margin-bottom: 10px;
+        }
+
+        .index-error a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .index-error a:hover {
+            text-decoration: underline;
         }
 
         @keyframes spin {
@@ -840,6 +868,14 @@
 
         <!-- Main Content -->
         <div class="container">
+            <!-- Index Error Message -->
+            <div id="index-error" class="index-error" style="display: none;">
+                <h3><i class="fas fa-exclamation-triangle"></i> Index Required</h3>
+                <p>Firestore needs to create an index to run your query. Click the link below to create it automatically:</p>
+                <p id="index-link-container"></p>
+                <p><small>This is a one-time setup. The index will be ready in a few minutes.</small></p>
+            </div>
+
             <!-- Upload Section -->
             <section class="upload-section" id="upload-section" style="display: none;">
                 <h2>Upload New Image</h2>
@@ -1112,6 +1148,8 @@
         const galleryView = document.getElementById('gallery-view');
         const imageViewer = document.getElementById('image-viewer');
         const gallery = document.getElementById('gallery');
+        const indexError = document.getElementById('index-error');
+        const indexLinkContainer = document.getElementById('index-link-container');
         const uploadArea = document.getElementById('upload-area');
         const fileInput = document.getElementById('file-input');
         const uploadBtn = document.getElementById('upload-btn');
@@ -1173,6 +1211,7 @@
         let filteredImages = [];
         let currentImage = null;
         let currentFilter = 'all';
+        let indexCreationAttempted = false;
 
         // Event Listeners
         document.addEventListener('DOMContentLoaded', initApp);
@@ -1387,13 +1426,24 @@
         // Load images from Firestore
         async function loadImages() {
             gallery.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            indexError.style.display = 'none';
             
             try {
                 let q;
+                
+                // Use simpler queries that don't require composite indexes initially
                 if (currentFilter === 'popular') {
-                    q = query(collection(db, 'images'), where('isPublic', '==', true), orderBy('likes', 'desc'));
+                    // For popular, we'll just sort client-side to avoid index requirements
+                    q = query(collection(db, 'images'), where('isPublic', '==', true));
                 } else {
-                    q = query(collection(db, 'images'), where('isPublic', '==', true), orderBy('timestamp', 'desc'));
+                    // For recent, use timestamp ordering (this might require an index)
+                    try {
+                        q = query(collection(db, 'images'), where('isPublic', '==', true), orderBy('timestamp', 'desc'));
+                    } catch (error) {
+                        // If that fails, use a simpler query
+                        console.warn('Complex query failed, using simple query:', error);
+                        q = query(collection(db, 'images'), where('isPublic', '==', true));
+                    }
                 }
                 
                 const querySnapshot = await getDocs(q);
@@ -1409,31 +1459,103 @@
                     });
                 });
                 
+                // Sort client-side if needed
+                if (currentFilter === 'popular') {
+                    images.sort((a, b) => (b.likes || 0) - (a.likes || 0));
+                } else if (currentFilter === 'recent') {
+                    images.sort((a, b) => b.timestamp - a.timestamp);
+                }
+                
                 // If user is logged in, also load their private images
                 if (currentUser) {
-                    const privateQuery = query(
-                        collection(db, 'images'), 
-                        where('authorId', '==', currentUser.uid),
-                        where('isPublic', '==', false),
-                        orderBy('timestamp', 'desc')
-                    );
-                    
-                    const privateSnapshot = await getDocs(privateQuery);
-                    privateSnapshot.forEach((doc) => {
-                        const data = doc.data();
-                        images.push({
-                            id: doc.id,
-                            ...data,
-                            timestamp: data.timestamp ? data.timestamp.toDate() : new Date()
+                    try {
+                        const privateQuery = query(
+                            collection(db, 'images'), 
+                            where('authorId', '==', currentUser.uid),
+                            where('isPublic', '==', false)
+                        );
+                        
+                        const privateSnapshot = await getDocs(privateQuery);
+                        privateSnapshot.forEach((doc) => {
+                            const data = doc.data();
+                            images.push({
+                                id: doc.id,
+                                ...data,
+                                timestamp: data.timestamp ? data.timestamp.toDate() : new Date()
+                            });
                         });
-                    });
+                        
+                        // Sort all images by timestamp
+                        images.sort((a, b) => b.timestamp - a.timestamp);
+                    } catch (error) {
+                        console.error('Error loading private images:', error);
+                        if (error.code === 'failed-precondition') {
+                            showIndexError(error);
+                        }
+                    }
                 }
                 
                 filterImages();
             } catch (error) {
                 console.error('Error loading images:', error);
-                gallery.innerHTML = '<p>Error loading images. Please try again later.</p>';
+                if (error.code === 'failed-precondition') {
+                    showIndexError(error);
+                } else {
+                    gallery.innerHTML = '<p>Error loading images. Please try again later.</p>';
+                }
             }
+        }
+
+        // Show index error with creation link
+        function showIndexError(error) {
+            console.error('Index error:', error);
+            
+            // Extract collection name and fields from error message
+            const errorMsg = error.message || '';
+            const collectionMatch = errorMsg.match(/collection.*?index/);
+            const fieldsMatch = errorMsg.match(/fields.*?\]/);
+            
+            let indexLink = '';
+            
+            if (collectionMatch && fieldsMatch) {
+                // Construct the Firebase console index creation URL
+                const projectId = firebaseConfig.projectId;
+                const collectionName = 'images'; // We know our collection name
+                
+                // Common index patterns for our app
+                if (errorMsg.includes('isPublic') && errorMsg.includes('timestamp')) {
+                    indexLink = `https://console.firebase.google.com/v1/r/project/${projectId}/firestore/indexes?create_composite=ClZwcm9qZWN0cy9maXJlZ2FsbGVyeS0xODg5My9kYXRhYmFzZXMvKGRlZmF1bHQpL2NvbGxlY3Rpb25Hcm91cHMvaW1hZ2VzL2luZGV4ZXMvCiJpbWFnZXNfaXNQdWJsaWNfdGltZXN0YW1wX2Rlc2NlbnQQCBohCglpc1B1YmxpYxABGhcKDXRpbWVzdGFtcBIGREVTQ0VOVA`;
+                } else if (errorMsg.includes('authorId') && errorMsg.includes('isPublic')) {
+                    indexLink = `https://console.firebase.google.com/v1/r/project/${projectId}/firestore/indexes?create_composite=ClZwcm9qZWN0cy9maXJlZ2FsbGVyeS0xODg5My9kYXRhYmFzZXMvKGRlZmF1bHQpL2NvbGxlY3Rpb25Hcm91cHMvaW1hZ2VzL2luZGV4ZXMvCiJpbWFnZXNfYXV0aG9ySWRfaXNQdWJsaWNfZGVzY2VuZGluZxACGhIKCmF1dGhvcklkEAEaEQoHaXNQdWJsaWMQAhoQCghfX25hbWVfXxAB`;
+                }
+                
+                if (indexLink) {
+                    indexLinkContainer.innerHTML = `<a href="${indexLink}" target="_blank">Create Required Index</a>`;
+                    indexError.style.display = 'block';
+                    gallery.innerHTML = '<p>Index required to load images. Please create the index using the link above.</p>';
+                } else {
+                    // Generic fallback
+                    gallery.innerHTML = `
+                        <p>Firestore index required. Please go to the 
+                        <a href="https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/indexes" target="_blank">
+                        Firebase Console</a> and create indexes for:
+                        <ul>
+                            <li>Collection: images, Fields: isPublic (Ascending), timestamp (Descending)</li>
+                            <li>Collection: images, Fields: authorId (Ascending), isPublic (Ascending)</li>
+                        </ul>
+                        </p>
+                    `;
+                }
+            } else {
+                // Generic error message
+                gallery.innerHTML = `
+                    <p>Firestore index required. Please go to the 
+                    <a href="https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/indexes" target="_blank">
+                    Firebase Console</a> and create the required indexes.</p>
+                `;
+            }
+            
+            showToast('Index required to load images. Check the message above.', 'warning');
         }
 
         // Filter images based on search and filter
@@ -1452,9 +1574,9 @@
                 if (currentFilter === 'mine' && currentUser) {
                     matchesFilter = image.authorId === currentUser.uid;
                 } else if (currentFilter === 'recent') {
-                    // Recent is the default, no additional filtering needed
+                    // Recent is handled by sorting
                 } else if (currentFilter === 'popular') {
-                    // Popular is handled by the query
+                    // Popular is handled by sorting
                 }
                 
                 return matchesSearch && matchesFilter;
@@ -1949,6 +2071,9 @@
             if (type === 'success') {
                 toast.classList.add('success');
                 toastIcon.className = 'fas fa-check-circle';
+            } else if (type === 'warning') {
+                toast.classList.add('warning');
+                toastIcon.className = 'fas fa-exclamation-triangle';
             } else {
                 toast.classList.add('error');
                 toastIcon.className = 'fas fa-exclamation-circle';
